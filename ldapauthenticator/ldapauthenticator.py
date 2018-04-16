@@ -261,6 +261,17 @@ class LDAPAuthenticator(Authenticator):
         help="List of attributes to be searched"
     )
     
+    uid = Int(
+        -1,
+        config=False,
+        help="Unix UID of user"
+    )
+
+    gid = Int(
+        -1,
+        config=False,
+        help="Unix GID of user"
+    )
     
     @gen.coroutine
     def authenticate(self, handler, data):
@@ -332,6 +343,13 @@ class LDAPAuthenticator(Authenticator):
         if isBound:
             if self.allowed_groups:
                 self.log.debug('username:%s Using dn %s', username, userdn)
+                if conn.search(userdn,
+                               search_scope=ldap3.BASE,
+                               search_filter='(objectClass=*)',
+                               attributes=['uidNumber', 'gidNumber']):
+                    self.uid = conn.response[0]['attributes'].get('uidNumber', -1)
+                    self.gid = conn.response[0]['attributes'].get('gidNumber', -1)
+
                 for group in self.allowed_groups:
                     groupfilter = (
                         '(|'
@@ -375,6 +393,12 @@ class LDAPAuthenticator(Authenticator):
             ))
             return None
 
+    def pre_spawn_start(self, user, spawner):
+        # create uid and gid environment variables to be picked up by spawner
+        if self.uid > -1:
+            spawner.environment['UID'] = self.uid
+        if self.gid > -1:
+            spawner.environment['GID'] = self.gid
 
 if __name__ == "__main__":
     import getpass
