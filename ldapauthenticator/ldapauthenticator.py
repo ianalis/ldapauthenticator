@@ -395,10 +395,12 @@ class LDAPAuthenticator(Authenticator):
 
     def pre_spawn_start(self, user, spawner):
         # create uid and gid environment variables to be picked up by spawner
+        self.log.debug('pre_spawn_start')
+        spawner.environment['NB_USER'] = user.name
         if self.uid > -1:
-            spawner.environment['UID'] = self.uid
+            spawner.environment['NB_UID'] = self.uid
         if self.gid > -1:
-            spawner.environment['GID'] = self.gid
+            spawner.environment['NB_GID'] = self.gid
 
 if __name__ == "__main__":
     import getpass
