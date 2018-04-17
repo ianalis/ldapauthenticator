@@ -398,9 +398,9 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('pre_spawn_start')
         spawner.environment['NB_USER'] = user.name
         if self.uid > -1:
-            spawner.environment['NB_UID'] = self.uid
+            spawner.environment['NB_UID'] = str(self.uid)
         if self.gid > -1:
-            spawner.environment['NB_GID'] = self.gid
+            spawner.environment['NB_GID'] = str(self.gid)
 
 if __name__ == "__main__":
     import getpass
