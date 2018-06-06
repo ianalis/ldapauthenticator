@@ -272,6 +272,12 @@ class LDAPAuthenticator(Authenticator):
         config=False,
         help="Unix GID of user"
     )
+
+    home_directory = Unicode(
+        '',
+        config=False,
+        help="Home directory of user"
+    )
     
     @gen.coroutine
     def authenticate(self, handler, data):
@@ -346,9 +352,11 @@ class LDAPAuthenticator(Authenticator):
                 if conn.search(userdn,
                                search_scope=ldap3.BASE,
                                search_filter='(objectClass=*)',
-                               attributes=['uidNumber', 'gidNumber']):
+                               attributes=['uidNumber', 'gidNumber', 'homeDirectory']):
                     self.uid = conn.response[0]['attributes'].get('uidNumber', -1)
                     self.gid = conn.response[0]['attributes'].get('gidNumber', -1)
+                    self.home_directory = (conn.response[0]['attributes']
+                                               .get('homeDirectory', ''))
 
                 for group in self.allowed_groups:
                     groupfilter = (
@@ -401,6 +409,8 @@ class LDAPAuthenticator(Authenticator):
             spawner.environment['NB_UID'] = str(self.uid)
         if self.gid > -1:
             spawner.environment['NB_GID'] = str(self.gid)
+        if self.home_directory:
+            spawner.environment['NB_HOMEDIR'] = self.home_directory
 
 if __name__ == "__main__":
     import getpass
