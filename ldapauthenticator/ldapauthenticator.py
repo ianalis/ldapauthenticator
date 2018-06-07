@@ -261,23 +261,23 @@ class LDAPAuthenticator(Authenticator):
         help="List of attributes to be searched"
     )
     
-    uid = Int(
-        -1,
-        config=False,
-        help="Unix UID of user"
-    )
-
-    gid = Int(
-        -1,
-        config=False,
-        help="Unix GID of user"
-    )
-
-    home_directory = Unicode(
-        '',
-        config=False,
-        help="Home directory of user"
-    )
+#    uid = Int(
+#        -1,
+#        config=False,
+#        help="Unix UID of user"
+#    )
+#
+#    gid = Int(
+#        -1,
+#        config=False,
+#        help="Unix GID of user"
+#    )
+#
+#    home_directory = Unicode(
+#        '',
+#        config=False,
+#        help="Home directory of user"
+#    )
     
     @gen.coroutine
     def authenticate(self, handler, data):
