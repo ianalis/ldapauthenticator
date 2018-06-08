@@ -402,23 +402,25 @@ class LDAPAuthenticator(Authenticator):
                 username=username,
             ))
             return None
-
+    
+    @gen.coroutine
     def pre_spawn_start(self, user, spawner):
+        auth_state = yield user.get_auth_state()
         # create uid and gid environment variables to be picked up by spawner
         self.log.debug('pre_spawn_start')
         self.log.debug('initial spawner environment:')
         self.log.debug(spawner.environment)
         self.log.debug('user.name: %s', user.name)
-        self.log.debug('user.auth_state.uid: %s', user.auth_state.uid)
-        self.log.debug('user.auth_state.gid: %s', user.auth_state.gid)
-        self.log.debug('user.auth_state.home_directory: %s', user.auth_state.home_directory)
+        self.log.debug('auth_state.uid: %s', auth_state['uid'])
+        self.log.debug('auth_state.gid: %s', auth_state['gid'])
+        self.log.debug('auth_state.home_directory: %s', auth_state['home_directory'])
         spawner.environment['NB_USER'] = user.name
-        if user.auth_state.uid > -1:
-            spawner.environment['NB_UID'] = str(user.auth_state.uid)
-        if user.auth_state.gid > -1:
-            spawner.environment['NB_GID'] = str(user.auth_state.gid)
-        if user.auth_state.home_directory:
-            spawner.environment['NB_HOMEDIR'] = user.auth_state.home_directory
+        if auth_state['uid'] > -1:
+            spawner.environment['NB_UID'] = str(auth_state['uid'])
+        if auth_state['gid'] > -1:
+            spawner.environment['NB_GID'] = str(auth_state['gid'])
+        if auth_state.home_directory:
+            spawner.environment['NB_HOMEDIR'] = auth_state['home_directory']
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
 
