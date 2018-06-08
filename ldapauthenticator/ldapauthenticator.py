@@ -281,6 +281,7 @@ class LDAPAuthenticator(Authenticator):
     
     @gen.coroutine
     def authenticate(self, handler, data):
+        auth_state = {}
         username = data['username']
         password = data['password']
         # Get LDAP Connection
@@ -353,10 +354,10 @@ class LDAPAuthenticator(Authenticator):
                                search_scope=ldap3.BASE,
                                search_filter='(objectClass=*)',
                                attributes=['uidNumber', 'gidNumber', 'homeDirectory']):
-                    self.uid = conn.response[0]['attributes'].get('uidNumber', -1)
-                    self.gid = conn.response[0]['attributes'].get('gidNumber', -1)
-                    self.home_directory = (conn.response[0]['attributes']
-                                               .get('homeDirectory', ''))
+                    auth_state['uid'] = conn.response[0]['attributes'].get('uidNumber', -1)
+                    auth_state['gid'] = conn.response[0]['attributes'].get('gidNumber', -1)
+                    auth_state['home_directory'] = (conn.response[0]['attributes']
+                                                        .get('homeDirectory', ''))
 
                 for group in self.allowed_groups:
                     groupfilter = (
@@ -373,7 +374,8 @@ class LDAPAuthenticator(Authenticator):
                         search_filter=groupfilter,
                         attributes=groupattributes
                     ):
-                        return username
+                        #return username
+                        return {'name': username, 'auth_state': auth_state}
                 # If we reach here, then none of the groups matched
                 self.log.warn('username:%s User not in any of the allowed groups', username)
                 return None
@@ -406,17 +408,17 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('pre_spawn_start')
         self.log.debug('initial spawner environment:')
         self.log.debug(spawner.environment)
-        self.log.debug('user.name: {}', user.name)
-        self.log.debug('self.uid: {}', self.uid)
-        self.log.debug('self.gid: {}', self.gid)
-        self.log.debug('self.home_directory: {}', self.home_directory)
+        self.log.debug('user.name: %s', user.name)
+        self.log.debug('user.auth_state.uid: %s', user.auth_state.uid)
+        self.log.debug('user.auth_state.gid: %s', user.auth_state.gid)
+        self.log.debug('user.auth_state.home_directory: %s', user.auth_state.home_directory)
         spawner.environment['NB_USER'] = user.name
-        if self.uid > -1:
-            spawner.environment['NB_UID'] = str(self.uid)
-        if self.gid > -1:
-            spawner.environment['NB_GID'] = str(self.gid)
-        if self.home_directory:
-            spawner.environment['NB_HOMEDIR'] = self.home_directory
+        if user.auth_state.uid > -1:
+            spawner.environment['NB_UID'] = str(user.auth_state.uid)
+        if user.auth_state.gid > -1:
+            spawner.environment['NB_GID'] = str(user.auth_state.gid)
+        if user.auth_state.home_directory:
+            spawner.environment['NB_HOMEDIR'] = user.auth_state.home_directory
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
 
