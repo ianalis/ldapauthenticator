@@ -419,7 +419,7 @@ class LDAPAuthenticator(Authenticator):
             spawner.environment['NB_UID'] = str(auth_state['uid'])
         if auth_state['gid'] > -1:
             spawner.environment['NB_GID'] = str(auth_state['gid'])
-        if auth_state.home_directory:
+        if auth_state['home_directory']:
             spawner.environment['NB_HOMEDIR'] = auth_state['home_directory']
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
