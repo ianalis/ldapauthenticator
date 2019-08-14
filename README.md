@@ -1,5 +1,7 @@
 # ldapauthenticator
 
+[![Build Status](https://travis-ci.com/jupyterhub/ldapauthenticator.svg?branch=master)](https://travis-ci.com/jupyterhub/ldapauthenticator)
+
 Simple LDAP Authenticator Plugin for JupyterHub
 
 ## Installation ##
@@ -9,11 +11,11 @@ You can install it from pip with:
 ```
 pip install jupyterhub-ldapauthenticator
 ```
+...or using conda with:
+```
+conda install -c conda-forge jupyterhub-ldapauthenticator
+```
 
-## Requirements ##
-
-I've only tested with python3 - anyone willing to test with python2
-is welcome to do so! There's no reason it shouldn't work.
 
 ## Logging people out ##
 
@@ -25,6 +27,7 @@ not log out would continue to be able to log in!
 
 You can do this by deleting the `jupyterhub_cookie_secret` file. Note
 that this will log out *all* users who are currently logged in.
+
 
 ## Usage ##
 
@@ -40,10 +43,12 @@ c.JupyterHub.authenticator_class = 'ldapauthenticator.LDAPAuthenticator'
 At minimum, the following two configuration options must be set before
 the LDAP Authenticator can be used:
 
+
 #### `LDAPAuthenticator.server_address` ####
 
 Address of the LDAP Server to contact. Just use a bare hostname or IP,
 without a port name or protocol prefix.
+
 
 #### `LDAPAuthenticator.bind_dn_template` ####
 
@@ -54,10 +59,11 @@ of the form `uid=Yuvipanda,ou=people,dc=wikimedia,dc=org` and some other users
 have DN like `uid=Mike,ou=developers,dc=wikimedia,dc=org` where Yuvipanda and
 Mike are the usernames, you would set this config item to be:
 
-```
+```python
 c.LDAPAuthenticator.bind_dn_template = [
-    'uid={username},ou=people,dc=wikimedia,dc=org',
-    'uid={username},ou=developers,dc=wikimedia,dc=org'
+    "uid={username},ou=people,dc=wikimedia,dc=org",
+    "uid={username},ou=developers,dc=wikimedia,dc=org",
+]
 ```
 
 Don't forget the preceeding `c.` for setting configuration parameters! JupyterHub
@@ -65,6 +71,7 @@ uses [traitlets](https://traitlets.readthedocs.io) for configuration, and the
 `c` represents the [config object](https://traitlets.readthedocs.io/en/stable/config.html).
 
 The `{username}` is expanded into the username the user provides.
+
 
 ### Optional configuration ###
 
@@ -80,8 +87,8 @@ As an example, to restrict access only to people in groups
 
 ```python
 c.LDAPAuthenticator.allowed_groups = [
-    'cn=researcher,ou=groups,dc=wikimedia,dc=org',
-    'cn=operations,ou=groups,dc=wikimedia,dc=org'
+    "cn=researcher,ou=groups,dc=wikimedia,dc=org",
+    "cn=operations,ou=groups,dc=wikimedia,dc=org",
 ]
 ```
 
@@ -141,7 +148,7 @@ c.LDAPAuthenticator.user_attribute = 'uid'
 #### `LDAPAuthenticator.lookup_dn_search_filter` ####
 
 How to query LDAP for user name lookup, if `lookup_dn` is set to True.
-Default value ``'({login_attr}={login})'` should be good enough for most use cases.
+Default value `'({login_attr}={login})'` should be good enough for most use cases.
 
 
 #### `LDAPAuthenticator.lookup_dn_search_user`, `LDAPAuthenticator.lookup_dn_search_password` ####
@@ -161,6 +168,12 @@ For most LDAP servers, this is username.  For Active Directory, it is cn.
 If set to True, escape special chars in userdn when authenticating in LDAP.
 On some LDAP servers, when userdn contains chars like '(', ')', '\' authentication may fail when those chars
 are not escaped.
+
+#### `LDAPAuthenticator.use_lookup_dn_username` ####
+
+If set to True (the default) the username used to build the DN string is returned as the username when `lookup_dn` is True.
+
+When authenticating on a Linux machine against an AD server this might return something different from the supplied UNIX username. In this case setting this option to False might be a solution.
 
 ## Compatibility ##
 
@@ -208,4 +221,3 @@ JupyterHub create local accounts using the LDAPAuthenticator.
 
 Issue [#19](https://github.com/jupyterhub/ldapauthenticator/issues/19) provides
 additional discussion on local user creation.
-
