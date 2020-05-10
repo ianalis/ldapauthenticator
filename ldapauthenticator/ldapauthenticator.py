@@ -137,6 +137,7 @@ class LDAPAuthenticator(Authenticator):
         c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
         c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
         c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
+        c.LDAPAuthenticator.bind_dn_template = '{username}'
         ```
         """,
     )
@@ -214,6 +215,10 @@ class LDAPAuthenticator(Authenticator):
 
     attributes = List(config=True, help="List of attributes to be searched")
 
+    auth_state_attributes = List(
+        config=True, help="List of attributes to be returned in auth_state for a user"
+    )
+
     use_lookup_dn_username = Bool(
         True,
         config=True,
@@ -235,7 +240,7 @@ class LDAPAuthenticator(Authenticator):
         if not is_bound:
             msg = "Failed to connect to LDAP server with search user '{search_dn}'"
             self.log.warning(msg.format(search_dn=search_dn))
-            return None
+            return (None, None)
 
         search_filter = self.lookup_dn_search_filter.format(
             login_attr=self.user_attribute, login=username_supplied_by_user
@@ -272,8 +277,32 @@ class LDAPAuthenticator(Authenticator):
                     username=username_supplied_by_user, attribute=self.user_attribute
                 )
             )
-            return None
-        return conn.response[0]["attributes"][self.lookup_dn_user_dn_attribute]
+            return (None, None)
+
+        user_dn = response[0]["attributes"][self.lookup_dn_user_dn_attribute]
+        if isinstance(user_dn, list):
+            if len(user_dn) == 0:
+                return (None, None)
+            elif len(user_dn) == 1:
+                user_dn = user_dn[0]
+            else:
+                msg = (
+                    "A lookup of the username '{username}' returned a list "
+                    "of entries for the attribute '{attribute}'. Only the "
+                    "first among these ('{first_entry}') was used. The other "
+                    "entries ({other_entries}) were ignored."
+                )
+                self.log.warn(
+                    msg.format(
+                        username=username_supplied_by_user,
+                        attribute=self.lookup_dn_user_dn_attribute,
+                        first_entry=user_dn[0],
+                        other_entries=", ".join(user_dn[1:]),
+                    )
+                )
+                user_dn = user_dn[0]
+
+        return (user_dn, response[0]["dn"])
 
     def get_connection(self, userdn, password):
         server = ldap3.Server(
@@ -287,29 +316,16 @@ class LDAPAuthenticator(Authenticator):
         )
         return conn
 
-    attributes = List(
-        config=True,
-        help="List of attributes to be searched"
-    )
-    
-#    uid = Int(
-#        -1,
-#        config=False,
-#        help="Unix UID of user"
-#    )
-#
-#    gid = Int(
-#        -1,
-#        config=False,
-#        help="Unix GID of user"
-#    )
-#
-#    home_directory = Unicode(
-#        '',
-#        config=False,
-#        help="Home directory of user"
-#    )
-    
+    def get_user_attributes(self, conn, userdn):
+        attrs = {}
+        if self.auth_state_attributes:
+            found = conn.search(
+                userdn, "(objectClass=*)", attributes=self.auth_state_attributes
+            )
+            if found:
+                attrs = conn.entries[0].entry_attributes_as_dict
+        return attrs
+
     @gen.coroutine
     def authenticate(self, handler, data):
         auth_state = {}
@@ -330,22 +346,27 @@ class LDAPAuthenticator(Authenticator):
             self.log.warning("username:%s Login denied for blank password", username)
             return None
 
-        if self.lookup_dn:
-            username = self.resolve_username(username)
-            if not username:
-                return None
-            if isinstance(username, list):
-                username = username[0]
+        # bind_dn_template should be of type List[str]
+        bind_dn_template = self.bind_dn_template
+        if isinstance(bind_dn_template, str):
+            bind_dn_template = [bind_dn_template]
+
+        # sanity check
+        if not self.lookup_dn and not bind_dn_template:
+            self.log.warning(
+                "Login not allowed, please configure 'lookup_dn' or 'bind_dn_template'."
+            )
+            return None
 
         if self.lookup_dn:
+            username, resolved_dn = self.resolve_username(username)
+            if not username:
+                return None
             if str(self.lookup_dn_user_dn_attribute).upper() == "CN":
                 # Only escape commas if the lookup attribute is CN
                 username = re.subn(r"([^\\]),", r"\1\,", username)[0]
-
-        bind_dn_template = self.bind_dn_template
-        if isinstance(bind_dn_template, str):
-            # bind_dn_template should be of type List[str]
-            bind_dn_template = [bind_dn_template]
+            if not bind_dn_template:
+                bind_dn_template = [resolved_dn]
 
         is_bound = False
         for dn in bind_dn_template:
@@ -367,7 +388,7 @@ class LDAPAuthenticator(Authenticator):
                     exc_msg=exc.args[0] if exc.args else "",
                 )
             else:
-                is_bound = conn.bind()
+                is_bound = True if conn.bound else conn.bind()
             msg = msg.format(username=username, userdn=userdn, is_bound=is_bound)
             self.log.debug(msg)
             if is_bound:
@@ -409,15 +430,6 @@ class LDAPAuthenticator(Authenticator):
 
         if self.allowed_groups:
             self.log.debug("username:%s Using dn %s", username, userdn)
-            if conn.search(userdn,
-                           search_scope=ldap3.BASE,
-                           search_filter='(objectClass=*)',
-                           attributes=['uidNumber', 'gidNumber', 'homeDirectory']):
-                auth_state['uid'] = conn.response[0]['attributes'].get('uidNumber', -1)
-                auth_state['gid'] = conn.response[0]['attributes'].get('gidNumber', -1)
-                auth_state['home_directory'] = (conn.response[0]['attributes']
-                                                    .get('homeDirectory', ''))
-
             found = False
             for group in self.allowed_groups:
                 group_filter = (
@@ -443,11 +455,15 @@ class LDAPAuthenticator(Authenticator):
                 self.log.warning(msg.format(username=username))
                 return None
 
-        if self.use_lookup_dn_username:
-            return {'name': username, 'auth_state': auth_state}
-        else:
-            return {'name': data["username"], 'auth_state': auth_state}
-    
+        if not self.use_lookup_dn_username:
+            username = data["username"]
+
+        user_info = self.get_user_attributes(conn, userdn)
+        if user_info:
+            self.log.debug("username:%s attributes:%s", username, user_info)
+            return {"name": username, "auth_state": user_info}
+        return username
+
     @gen.coroutine
     def pre_spawn_start(self, user, spawner):
         auth_state = yield user.get_auth_state()
@@ -456,16 +472,16 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('initial spawner environment:')
         self.log.debug(spawner.environment)
         self.log.debug('user.name: %s', user.name)
-        self.log.debug('auth_state.uid: %s', auth_state['uid'])
-        self.log.debug('auth_state.gid: %s', auth_state['gid'])
-        self.log.debug('auth_state.home_directory: %s', auth_state['home_directory'])
+        self.log.debug('auth_state.uid: %s', auth_state['uidNumber'])
+        self.log.debug('auth_state.gid: %s', auth_state['gidNumber'])
+        self.log.debug('auth_state.home_directory: %s', auth_state['homeDirectory'])
         spawner.environment['NB_USER'] = user.name
         if auth_state['uid'] > -1:
-            spawner.environment['NB_UID'] = str(auth_state['uid'])
+            spawner.environment['NB_UID'] = str(auth_state['uidNumber'])
         if auth_state['gid'] > -1:
-            spawner.environment['NB_GID'] = str(auth_state['gid'])
+            spawner.environment['NB_GID'] = str(auth_state['gidNumber'])
         if auth_state['home_directory']:
-            spawner.environment['NB_HOMEDIR'] = auth_state['home_directory']
+            spawner.environment['NB_HOMEDIR'] = auth_state['homeDirectory']
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
 
