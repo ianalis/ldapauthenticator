@@ -472,16 +472,16 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('initial spawner environment:')
         self.log.debug(spawner.environment)
         self.log.debug('user.name: %s', user.name)
-        self.log.debug('auth_state.uid: %s', auth_state['uidNumber'])
-        self.log.debug('auth_state.gid: %s', auth_state['gidNumber'])
-        self.log.debug('auth_state.home_directory: %s', auth_state['homeDirectory'])
+        self.log.debug('auth_state.uid: %s', auth_state['uidNumber'][0])
+        self.log.debug('auth_state.gid: %s', auth_state['gidNumber'][0])
+        self.log.debug('auth_state.home_directory: %s', auth_state['homeDirectory'][0])
         spawner.environment['NB_USER'] = user.name
-        if auth_state['uidNumber'] > -1:
-            spawner.environment['NB_UID'] = str(auth_state['uidNumber'])
-        if auth_state['gidNumber'] > -1:
-            spawner.environment['NB_GID'] = str(auth_state['gidNumber'])
-        if auth_state['homeDirectory']:
-            spawner.environment['NB_HOMEDIR'] = auth_state['homeDirectory']
+        if auth_state['uidNumber'][0] > -1:
+            spawner.environment['NB_UID'] = str(auth_state['uidNumber'][0])
+        if auth_state['gidNumber'][0] > -1:
+            spawner.environment['NB_GID'] = str(auth_state['gidNumber'][0])
+        if auth_state['homeDirectory'][0]:
+            spawner.environment['NB_HOMEDIR'] = auth_state['homeDirectory'][0]
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
 
