@@ -472,9 +472,7 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('initial spawner environment:')
         self.log.debug(spawner.environment)
         self.log.debug('user.name: %s', user.name)
-        self.log.debug('auth_state.uid: %s', auth_state['uidNumber'][0])
-        self.log.debug('auth_state.gid: %s', auth_state['gidNumber'][0])
-        self.log.debug('auth_state.home_directory: %s', auth_state['homeDirectory'][0])
+        self.log.debug('auth_state: %s', str(auth_state))
         spawner.environment['NB_USER'] = user.name
         if auth_state['uidNumber'][0] > -1:
             spawner.environment['NB_UID'] = str(auth_state['uidNumber'][0])
