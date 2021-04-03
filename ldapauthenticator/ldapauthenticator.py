@@ -72,7 +72,7 @@ class LDAPAuthenticator(Authenticator):
     allowed_groups = List(
         config=True,
         allow_none=True,
-        default=None,
+        default_value=None,
         help="""
         List of LDAP group DNs that users could be members of to be granted access.
 
@@ -118,7 +118,7 @@ class LDAPAuthenticator(Authenticator):
 
     user_search_base = Unicode(
         config=True,
-        default=None,
+        default_value=None,
         allow_none=True,
         help="""
         Base for looking up user accounts in the directory, if `lookup_dn` is set to True.
@@ -144,7 +144,7 @@ class LDAPAuthenticator(Authenticator):
 
     user_attribute = Unicode(
         config=True,
-        default=None,
+        default_value=None,
         allow_none=True,
         help="""
         Attribute containing user's name, if `lookup_dn` is set to True.
@@ -309,7 +309,7 @@ class LDAPAuthenticator(Authenticator):
             self.server_address, port=self.server_port, use_ssl=self.use_ssl
         )
         auto_bind = (
-            self.use_ssl and ldap3.AUTO_BIND_TLS_BEFORE_BIND or ldap3.AUTO_BIND_NO_TLS
+            ldap3.AUTO_BIND_NO_TLS if self.use_ssl else ldap3.AUTO_BIND_TLS_BEFORE_BIND
         )
         conn = ldap3.Connection(
             server, user=userdn, password=password, auto_bind=auto_bind
