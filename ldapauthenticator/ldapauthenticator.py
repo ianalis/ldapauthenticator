@@ -1,14 +1,25 @@
+import enum
 import re
+from inspect import isawaitable
 
 import ldap3
 from jupyterhub.auth import Authenticator
+from ldap3.core.exceptions import LDAPBindError, LDAPSocketOpenError
+from ldap3.core.tls import Tls
 from ldap3.utils.conv import escape_filter_chars
-from tornado import gen
-from traitlets import Bool
-from traitlets import Int
-from traitlets import List
-from traitlets import Unicode
-from traitlets import Union
+from ldap3.utils.dn import escape_rdn
+from traitlets import Bool, Dict, Int, List, Unicode, Union, UseEnum, observe, validate
+
+
+class TlsStrategy(enum.Enum):
+    """
+    Represents a SSL/TLS strategy for LDAPAuthenticator to use when interacting
+    with the LDAP server.
+    """
+
+    before_bind = 1
+    on_connect = 2
+    insecure = 3
 
 
 class LDAPAuthenticator(Authenticator):
@@ -25,23 +36,85 @@ class LDAPAuthenticator(Authenticator):
         help="""
         Port on which to contact the LDAP server.
 
-        Defaults to `636` if `use_ssl` is set, `389` otherwise.
+        Defaults to `636` if `tls_strategy="on_connect"` is set, `389`
+        otherwise.
         """,
     )
 
     def _server_port_default(self):
-        if self.use_ssl:
+        if self.tls_strategy == TlsStrategy.on_connect:
             return 636  # default SSL port for LDAP
         else:
             return 389  # default plaintext port for LDAP
 
     use_ssl = Bool(
-        False,
+        None,
+        allow_none=True,
         config=True,
         help="""
-        Use SSL to communicate with the LDAP server.
+        `use_ssl` is deprecated since 2.0. `use_ssl=True` translates to configuring
+        `tls_strategy="on_connect"`, but `use_ssl=False` (previous default) doesn't
+        translate to anything.
+        """,
+    )
 
-        Deprecated in version 3 of LDAP. Your LDAP server must be configured to support this, however.
+    @observe("use_ssl")
+    def _observe_use_ssl(self, change):
+        if change.new:
+            self.tls_strategy = TlsStrategy.on_connect
+            self.log.warning(
+                "LDAPAuthenticator.use_ssl is deprecated in 2.0 in favor of LDAPAuthenticator.tls_strategy, "
+                'instead of configuring use_ssl=True, configure tls_strategy="on_connect" from now on.'
+            )
+        else:
+            self.log.warning(
+                "LDAPAuthenticator.use_ssl is deprecated in 2.0 in favor of LDAPAuthenticator.tls_strategy, "
+                "you can stop configuring use_ssl=False from now on as doing so has no effect."
+            )
+
+    tls_strategy = UseEnum(
+        TlsStrategy,
+        default_value=TlsStrategy.before_bind,
+        config=True,
+        help="""
+        When LDAPAuthenticator connects to the LDAP server, it can establish a
+        SSL/TLS connection directly, or do it before binding, which is LDAP
+        terminology for authenticating and sending sensitive credentials.
+
+        The LDAP v3 protocol deprecated establishing a SSL/TLS connection
+        directly (`tls_strategy="on_connect"`) in favor of upgrading the
+        connection to SSL/TLS before binding (`tls_strategy="before_bind"`).
+
+        Supported `tls_strategy` values are:
+        - "before_bind" (default)
+        - "on_connect" (deprecated in LDAP v3, associated with use of port 636)
+        - "insecure"
+
+        When configuring `tls_strategy="on_connect"`, the default value of
+        `server_port` becomes 636.
+        """,
+    )
+
+    tls_kwargs = Dict(
+        config=True,
+        help="""
+        A dictionary that will be used as keyword arguments for the constructor
+        of the ldap3 package's TLS object, influencing encrypted connections to
+        the LDAP server.
+
+        For details on what can be configured and its effects, refer to the
+        ldap3 package's documentation and code:
+
+        - ldap3 documentation: https://ldap3.readthedocs.io/en/latest/ssltls.html#the-tls-object
+        - ldap3 code: https://github.com/cannatag/ldap3/blob/v2.9.1/ldap3/core/tls.py#L59-L82
+
+        You can for example configure this like:
+
+        ```python
+        c.LDAPAuthenticator.tls_kwargs = {
+            "ca_certs_file": "file/path.here",
+        }
+        ```
         """,
     )
 
@@ -58,16 +131,39 @@ class LDAPAuthenticator(Authenticator):
         (such as uid or sAMAccountName), please see `lookup_dn`. It might
         be particularly relevant for ActiveDirectory installs.
 
-        Unicode Example:
+        String example:
             uid={username},ou=people,dc=wikimedia,dc=org
 
-        List Example:
+        List example:
             [
             	uid={username},ou=people,dc=wikimedia,dc=org,
             	uid={username},ou=Developers,dc=wikimedia,dc=org
         	]
         """,
     )
+
+    @validate("bind_dn_template")
+    def _validate_bind_dn_template(self, proposal):
+        """
+        Ensure a List[str] is set, filtered from empty string elements.
+        """
+        rv = []
+        if isinstance(proposal.value, str):
+            rv = [proposal.value]
+        else:
+            rv = proposal.value
+        if "" in rv:
+            self.log.warning("Ignoring blank 'bind_dn_template' entry!")
+            rv = [e for e in rv if e]
+        return rv
+
+    @observe("lookup_dn", "bind_dn_template")
+    def _require_either_lookup_dn_or_bind_dn_template(self, change):
+        if not self.lookup_dn and not self.bind_dn_template:
+            raise ValueError(
+                "LDAPAuthenticator requires either lookup_dn or "
+                "bind_dn_template to be configured"
+            )
 
     allowed_groups = List(
         config=True,
@@ -83,23 +179,52 @@ class LDAPAuthenticator(Authenticator):
 
         Set to an empty list or None to allow all users that have an LDAP account to log in,
         without performing any group membership checks.
+
+        When combined with `search_filter`, this strictly reduces the allowed users,
+        i.e. `search_filter` AND `allowed_groups` must both be satisfied.
         """,
     )
 
-    # FIXME: Use something other than this? THIS IS LAME, akin to websites restricting things you
-    # can use in usernames / passwords to protect from SQL injection!
+    group_search_filter = Unicode(
+        config=True,
+        default_value="(|(member={userdn})(uniqueMember={userdn})(memberUid={uid}))",
+        help="""
+        The search filter template used to locate groups that the user belongs to.
+
+        `{userdn}` and `{uid}` will be replaced with the LDAP user's attributes.
+
+        Certain server types may use different values, and may also
+        reject invalid values by raising exceptions.
+        """,
+    )
+
+    group_attributes = List(
+        config=True,
+        default_value=["member", "uniqueMember", "memberUid"],
+        help="List of attributes in the LDAP group to be searched",
+    )
+
+    @observe("allowed_groups", "group_search_filter", "group_attributes")
+    def _ensure_allowed_groups_requirements(self, change):
+        if not self.allowed_groups:
+            return
+        if not self.group_search_filter or not self.group_attributes:
+            raise ValueError(
+                "LDAPAuthenticator.allowed_groups requires both "
+                "group_search_filter and group_attributes to be configured"
+            )
+
     valid_username_regex = Unicode(
         r"^[a-z][.a-z0-9_-]*$",
         config=True,
         help="""
-        Regex for validating usernames - those that do not match this regex will be rejected.
+        Regex for validating usernames - those that do not match this regex will
+        be rejected.
 
-        This is primarily used as a measure against LDAP injection, which has fatal security
-        considerations. The default works for most LDAP installations, but some users might need
-        to modify it to fit their custom installs. If you are modifying it, be sure to understand
-        the implications of allowing additional characters in usernames and what that means for
-        LDAP injection issues. See https://www.owasp.org/index.php/LDAP_injection for an overview
-        of LDAP injection.
+        This config was primarily introduced to prevent LDAP injection
+        (https://www.owasp.org/index.php/LDAP_injection), but that is since 2.0
+        being mitigated by escaping all sensitive characters when interacting
+        with the LDAP server.
         """,
     )
 
@@ -121,23 +246,29 @@ class LDAPAuthenticator(Authenticator):
         default_value=None,
         allow_none=True,
         help="""
-        Base for looking up user accounts in the directory, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True` or with a configured `search_filter`.
 
-        LDAPAuthenticator will search all objects matching under this base where the `user_attribute`
-        is set to the current username to form the userdn.
+        Defines the search base for looking up users in the directory.
 
-        For example, if all users objects existed under the base ou=people,dc=wikimedia,dc=org, and
-        the username users use is set with the attribute `uid`, you can use the following config:
-
+        ```python
+        c.LDAPAuthenticator.user_search_base = 'ou=People,dc=example,dc=com'
         ```
+
+        LDAPAuthenticator will search all objects under this base where
+        the `user_attribute` is set to the current username to form the userdn.
+
+        For example, if all users objects existed under the base
+        `ou=people,dc=wikimedia,dc=org`, the username is set with
+        the attribute `uid`, you can use the following config:
+
+        ```python
         c.LDAPAuthenticator.lookup_dn = True
         c.LDAPAuthenticator.lookup_dn_search_filter = '({login_attr}={login})'
         c.LDAPAuthenticator.lookup_dn_search_user = 'ldap_search_user_technical_account'
         c.LDAPAuthenticator.lookup_dn_search_password = 'secret'
         c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
-        c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
-        c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
-        c.LDAPAuthenticator.bind_dn_template = '{username}'
+        c.LDAPAuthenticator.user_attribute = 'uid'
+        c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'sAMAccountName'
         ```
         """,
     )
@@ -147,12 +278,18 @@ class LDAPAuthenticator(Authenticator):
         default_value=None,
         allow_none=True,
         help="""
-        Attribute containing user's name, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True` or with a configured `search_filter`.
 
-        See `user_search_base` for info on how this attribute is used.
+        Together with `user_search_base`, this attribute will be searched to
+        contain the username provided by the user in JupyterHub's login form.
 
-        For most LDAP servers, this is uid.  For Active Directory, it is
-        sAMAccountName.
+        ```python
+        # Active Directory
+        c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
+
+        # OpenLDAP
+        c.LDAPAuthenticator.user_attribute = 'uid'
+        ```
         """,
     )
 
@@ -161,7 +298,12 @@ class LDAPAuthenticator(Authenticator):
         default_value="({login_attr}={login})",
         allow_none=True,
         help="""
-        How to query LDAP for user name lookup, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True`.
+
+        How to query LDAP for user name lookup.
+
+        Default value `'({login_attr}={login})'` should be good enough for most
+        use cases.
         """,
     )
 
@@ -170,9 +312,11 @@ class LDAPAuthenticator(Authenticator):
         default_value=None,
         allow_none=True,
         help="""
-        Technical account for user lookup, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True`.
 
-        If both lookup_dn_search_user and lookup_dn_search_password are None, then anonymous LDAP query will be done.
+        Technical account for user lookup. If both `lookup_dn_search_user` and
+        `lookup_dn_search_password` are None, then anonymous LDAP query will be
+        done.
         """,
     )
 
@@ -181,7 +325,9 @@ class LDAPAuthenticator(Authenticator):
         default_value=None,
         allow_none=True,
         help="""
-        Technical account for user lookup, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True`.
+
+        Password for a `lookup_dn_search_user`.
         """,
     )
 
@@ -190,11 +336,11 @@ class LDAPAuthenticator(Authenticator):
         default_value=None,
         allow_none=True,
         help="""
-        Attribute containing user's name needed for  building DN string, if `lookup_dn` is set to True.
+        Only used with `lookup_dn=True`.
 
-        See `user_search_base` for info on how this attribute is used.
-
-        For most LDAP servers, this is username.  For Active Directory, it is cn.
+        Attribute containing user's name needed for building DN string. See
+        `user_search_base` for info on how this attribute is used. For most LDAP
+        servers, this is username. For Active Directory, it is `sAMAccountName`.
         """,
     )
 
@@ -202,63 +348,106 @@ class LDAPAuthenticator(Authenticator):
         False,
         config=True,
         help="""
-        If set to True, escape special chars in userdn when authenticating in LDAP.
-
-        On some LDAP servers, when userdn contains chars like '(', ')', '\' authentication may fail when those chars
-        are not escaped.
+        Removed in 2.0, configuring this no longer has any effect.
         """,
     )
 
+    @observe("escape_userdn")
+    def _observe_escape_userdn(self, change):
+        self.log.warning(
+            "LDAPAuthenticator.escape_userdn was removed in 2.0 and no longer has any effect."
+        )
+
     search_filter = Unicode(
-        config=True, help="LDAP3 Search Filter whose results are allowed access"
+        config=True,
+        help="""
+        LDAP3 Search Filter to limit allowed users.
+
+        That a unique LDAP user is identified with the search_filter is
+        necessary but not sufficient to grant access. Grant access by setting
+        one or more of `allowed_users`, `allow_all`, `allowed_groups`, etc.
+
+        Users who do not match this filter cannot be allowed
+        by any other configuration.
+
+        The search filter string will be expanded, so that:
+
+        - `{userattr}` is replaced with the `user_attribute` config's value.
+        - `{username}` is replaced with an escaped username, either provided
+          directly or previously looked up with `lookup_dn` configured.
+        """,
     )
 
-    attributes = List(config=True, help="List of attributes to be searched")
+    attributes = List(
+        config=True,
+        help="""
+        List of attributes to be passed in the LDAP search with `search_filter`.
+        """,
+    )
 
     auth_state_attributes = List(
-        config=True, help="List of attributes to be returned in auth_state for a user"
+        config=True,
+        help="""
+        List of user attributes to be returned in auth_state
+
+        Will be available in `auth_state["user_attributes"]`
+        """,
     )
 
     use_lookup_dn_username = Bool(
-        True,
+        False,
         config=True,
         help="""
-        If set to true uses the `lookup_dn_user_dn_attribute` attribute as username instead of the supplied one.
+        Only used with `lookup_dn=True`.
 
-        This can be useful in an heterogeneous environment, when supplying a UNIX username to authenticate against AD.
+        If configured True, the `lookup_dn_user_dn_attribute` value used to
+        build the LDAP user's DN string is also used as the authenticated user's
+        JupyterHub username.
+
+        If this is configured True, its important to ensure that the values of
+        `lookup_dn_user_dn_attribute` are unique even after the are normalized
+        to be lowercase, otherwise two LDAP users could end up sharing the same
+        JupyterHub username.
+
+        With ldapauthenticator 2, the default value was changed to False.
         """,
     )
 
     def resolve_username(self, username_supplied_by_user):
-        search_dn = self.lookup_dn_search_user
-        if self.escape_userdn:
-            search_dn = escape_filter_chars(search_dn)
+        """
+        Resolves a username (that could be used to construct a DN through a
+        template), and a DN, based on a username supplied by a user via a login
+        prompt in JupyterHub.
+
+        Returns (username, userdn) if found, or (None, None) if an error occurred,
+        or if `username_supplied_by_user` does not correspond to a unique user.
+        """
         conn = self.get_connection(
-            userdn=search_dn, password=self.lookup_dn_search_password
+            userdn=self.lookup_dn_search_user,
+            password=self.lookup_dn_search_password,
         )
-        is_bound = conn.bind()
-        if not is_bound:
-            msg = "Failed to connect to LDAP server with search user '{search_dn}'"
-            self.log.warning(msg.format(search_dn=search_dn))
+        if not conn:
+            self.log.error(
+                f"Failed to bind lookup_dn_search_user '{self.lookup_dn_search_user}'"
+            )
             return (None, None)
 
         search_filter = self.lookup_dn_search_filter.format(
-            login_attr=self.user_attribute, login=username_supplied_by_user
-        )
-        msg = "\n".join(
-            [
-                "Looking up user with:",
-                "    search_base = '{search_base}'",
-                "    search_filter = '{search_filter}'",
-                "    attributes = '{attributes}'",
-            ]
+            # A search filter matching against string literals, should
+            # have the string literals escaped with escape_filter_chars.
+            # Escaped characters are `/()*` (and null).
+            #
+            # ref: https://datatracker.ietf.org/doc/html/rfc4515#section-3
+            # ref: https://ldap3.readthedocs.io/en/latest/searches.html?highlight=escape_filter_chars
+            #
+            login_attr=self.user_attribute,
+            login=escape_filter_chars(username_supplied_by_user),
         )
         self.log.debug(
-            msg.format(
-                search_base=self.user_search_base,
-                search_filter=search_filter,
-                attributes=self.user_attribute,
-            )
+            "Looking up user with:\n"
+            f"    search_base = '{self.user_search_base}'\n"
+            f"    search_filter = '{search_filter}'\n"
+            f"    attributes = '[{self.lookup_dn_user_dn_attribute}]'"
         )
         conn.search(
             search_base=self.user_search_base,
@@ -266,206 +455,288 @@ class LDAPAuthenticator(Authenticator):
             search_filter=search_filter,
             attributes=[self.lookup_dn_user_dn_attribute],
         )
-        response = conn.response
-        if len(response) == 0 or "attributes" not in response[0].keys():
-            msg = (
-                "No entry found for user '{username}' "
-                "when looking up attribute '{attribute}'"
-            )
-            self.log.warning(
-                msg.format(
-                    username=username_supplied_by_user, attribute=self.user_attribute
-                )
+
+        # identify unique search response entry
+        n_entries = len(conn.entries)
+        if n_entries == 0:
+            self.log.warning(f"No response looking up '{username_supplied_by_user}'")
+            return (None, None)
+        if n_entries > 1:
+            self.log.error(
+                f"Looking up '{username_supplied_by_user}' gave multiple entries, "
+                f"expected 0 or 1 search response entries but received {n_entries}. "
+                "Is lookup_dn_search_filter and user_attribute configured to get a "
+                "unique match?"
             )
             return (None, None)
+        entry = conn.entries[0]
 
-        user_dn = response[0]["attributes"][self.lookup_dn_user_dn_attribute]
-        if isinstance(user_dn, list):
-            if len(user_dn) == 0:
-                return (None, None)
-            elif len(user_dn) == 1:
-                user_dn = user_dn[0]
+        # identify unique attribute value within the entry
+        attribute_values = entry.entry_attributes_as_dict.get(
+            self.lookup_dn_user_dn_attribute
+        )
+        if not attribute_values:
+            if attribute_values is None:
+                self.log.error(
+                    f"No attribute '{self.lookup_dn_user_dn_attribute}' found. "
+                    "Is lookup_dn_user_dn_attribute configured correctly?"
+                )
             else:
-                msg = (
-                    "A lookup of the username '{username}' returned a list "
-                    "of entries for the attribute '{attribute}'. Only the "
-                    "first among these ('{first_entry}') was used. The other "
-                    "entries ({other_entries}) were ignored."
+                self.log.error(
+                    f"No attribute values for '{self.lookup_dn_user_dn_attribute}'. "
+                    "Is lookup_dn_user_dn_attribute configured correctly?"
                 )
-                self.log.warn(
-                    msg.format(
-                        username=username_supplied_by_user,
-                        attribute=self.lookup_dn_user_dn_attribute,
-                        first_entry=user_dn[0],
-                        other_entries=", ".join(user_dn[1:]),
-                    )
-                )
-                user_dn = user_dn[0]
+            return (None, None)
+        if len(attribute_values) > 1:
+            self.log.error(
+                f"Attribute '{self.lookup_dn_user_dn_attribute}' had multiple values, "
+                f"expected one attribute value but it had {len(attribute_values)} "
+                f"({';'.join(attribute_values)}). "
+                "Is lookup_dn_user_dn_attribute configured correctly?"
+            )
+            return None, None
 
-        return (user_dn, response[0]["dn"])
+        userdn = entry.entry_dn
+        username = attribute_values[0]
+        return (username, userdn)
 
     def get_connection(self, userdn, password):
+        """
+        Returns either an ldap3 Connection object automatically bound to the
+        user, or None if the bind operation failed for some reason.
+
+        Raises errors on connectivity or TLS issues.
+
+        ldap3 Connection ref:
+        - docs: https://ldap3.readthedocs.io/en/latest/connection.html
+        - code: https://github.com/cannatag/ldap3/blob/dev/ldap3/core/connection.py
+        """
+        if self.tls_strategy == TlsStrategy.on_connect:
+            use_ssl = True
+            auto_bind = ldap3.AUTO_BIND_NO_TLS
+        elif self.tls_strategy == TlsStrategy.before_bind:
+            use_ssl = False
+            auto_bind = ldap3.AUTO_BIND_TLS_BEFORE_BIND
+        else:  # TlsStrategy.insecure
+            use_ssl = False
+            auto_bind = ldap3.AUTO_BIND_NO_TLS
+
+        tls = Tls(**self.tls_kwargs)
         server = ldap3.Server(
-            self.server_address, port=self.server_port, use_ssl=self.use_ssl
+            self.server_address,
+            port=self.server_port,
+            use_ssl=use_ssl,
+            tls=tls,
         )
-        auto_bind = (
-            ldap3.AUTO_BIND_NO_TLS if self.use_ssl else ldap3.AUTO_BIND_TLS_BEFORE_BIND
-        )
-        conn = ldap3.Connection(
-            server, user=userdn, password=password, auto_bind=auto_bind
-        )
-        return conn
+        try:
+            self.log.debug(f"Attempting to bind {userdn}")
+            conn = ldap3.Connection(
+                server,
+                user=userdn,
+                password=password,
+                auto_bind=auto_bind,
+            )
+        except LDAPSocketOpenError as e:
+            if "handshake" in str(e).lower():
+                self.log.error(
+                    "A TLS handshake failure has occurred. "
+                    "It could be an indication that no cipher suite accepted by "
+                    "LDAPAuthenticator was accepted by the LDAP server. For "
+                    "guidance on how to handle this, refer to documentation at "
+                    "https://github.com/consideRatio/ldapauthenticator/tree/main?tab=readme-ov-file#handling-ssltls-handshake-errors"
+                )
+            raise
+        except LDAPBindError as e:
+            self.log.debug(
+                "Failed to bind {userdn}\n{e_type}: {e_msg}".format(
+                    userdn=userdn,
+                    e_type=e.__class__.__name__,
+                    e_msg=e.args[0] if e.args else "",
+                )
+            )
+            return None
+        else:
+            self.log.debug(f"Successfully bound {userdn}")
+            return conn
 
     def get_user_attributes(self, conn, userdn):
-        attrs = {}
         if self.auth_state_attributes:
-            found = conn.search(
-                userdn, "(objectClass=*)", attributes=self.auth_state_attributes
+            conn.search(
+                search_base=userdn,
+                search_scope=ldap3.SUBTREE,
+                search_filter="(objectClass=*)",
+                attributes=self.auth_state_attributes,
             )
-            if found:
-                attrs = conn.entries[0].entry_attributes_as_dict
-        return attrs
 
-    @gen.coroutine
-    def authenticate(self, handler, data):
-        auth_state = {}
-        username = data['username']
-        password = data['password']
-        
+            # identify unique search response entry
+            n_entries = len(conn.entries)
+            if n_entries == 1:
+                return conn.entries[0].entry_attributes_as_dict
+            self.log.error(
+                f"Expected 1 but got {n_entries} search response entries for DN '{userdn}' "
+                "when looking up attributes configured via auth_state_attributes. The user's "
+                "auth state will not include any attributes."
+            )
+        return {}
+
+    async def authenticate(self, handler, data):
+        """
+        Note: This function is really meant to identify a user, and
+              check_allowed and check_blocked are meant to determine if its an
+              authorized user. Authorization is currently handled by returning
+              None here instead.
+
+        ref: https://jupyterhub.readthedocs.io/en/latest/reference/authenticators.html#authenticator-authenticate
+        """
+        login_username = data["username"]
+        password = data["password"]
+
         # Protect against invalid usernames as well as LDAP injection attacks
-        if not re.match(self.valid_username_regex, username):
+        if not re.match(self.valid_username_regex, login_username):
             self.log.warning(
                 "username:%s Illegal characters in username, must match regex %s",
-                username,
+                login_username,
                 self.valid_username_regex,
             )
             return None
 
         # No empty passwords!
         if password is None or password.strip() == "":
-            self.log.warning("username:%s Login denied for blank password", username)
-            return None
-
-        # bind_dn_template should be of type List[str]
-        bind_dn_template = self.bind_dn_template
-        if isinstance(bind_dn_template, str):
-            bind_dn_template = [bind_dn_template]
-
-        # sanity check
-        if not self.lookup_dn and not bind_dn_template:
             self.log.warning(
-                "Login not allowed, please configure 'lookup_dn' or 'bind_dn_template'."
+                "username:%s Login denied for blank password", login_username
             )
             return None
 
+        bind_dn_template = self.bind_dn_template
+        resolved_username = login_username
         if self.lookup_dn:
-            username, resolved_dn = self.resolve_username(username)
-            if not username:
+            resolved_username, resolved_dn = self.resolve_username(login_username)
+            if not resolved_dn:
+                self.log.warning(
+                    "username:%s Login denied for failed lookup", login_username
+                )
                 return None
-            if str(self.lookup_dn_user_dn_attribute).upper() == "CN":
-                # Only escape commas if the lookup attribute is CN
-                username = re.subn(r"([^\\]),", r"\1\,", username)[0]
             if not bind_dn_template:
                 bind_dn_template = [resolved_dn]
 
-        is_bound = False
+        # bind to ldap user
+        conn = None
         for dn in bind_dn_template:
-            if not dn:
-                self.log.warning("Ignoring blank 'bind_dn_template' entry!")
-                continue
-            userdn = dn.format(username=username)
-            if self.escape_userdn:
-                userdn = escape_filter_chars(userdn)
-            msg = "Attempting to bind {username} with {userdn}"
-            self.log.debug(msg.format(username=username, userdn=userdn))
-            msg = "Status of user bind {username} with {userdn} : {is_bound}"
-            try:
-                conn = self.get_connection(userdn, password)
-            except ldap3.core.exceptions.LDAPBindError as exc:
-                is_bound = False
-                msg += "\n{exc_type}: {exc_msg}".format(
-                    exc_type=exc.__class__.__name__,
-                    exc_msg=exc.args[0] if exc.args else "",
+            # A DN represented as a string should have its attribute values
+            # escaped with escape_rdn. Escaped characters are `\,+"<>;=` (and
+            # null).
+            #
+            # ref: https://datatracker.ietf.org/doc/html/rfc4514#section-2.4.
+            # ref: https://ldap3.readthedocs.io/en/latest/connection.html?highlight=escape_rdn
+            #
+            userdn = dn.format(username=escape_rdn(resolved_username))
+            conn = self.get_connection(userdn, password)
+            if conn:
+                break
+        if not conn:
+            if login_username == resolved_username:
+                self.log.warning(
+                    f"Failed to bind user '{login_username}' to an LDAP user."
                 )
             else:
-                is_bound = True if conn.bound else conn.bind()
-            msg = msg.format(username=username, userdn=userdn, is_bound=is_bound)
-            self.log.debug(msg)
-            if is_bound:
-                break
-
-        if not is_bound:
-            msg = "Invalid password for user '{username}'"
-            self.log.warning(msg.format(username=username))
+                self.log.warning(
+                    f"Failed to bind login username '{login_username}', "
+                    f"with looked up user attribute value '{resolved_username}', "
+                    "to an LDAP user."
+                )
             return None
 
         if self.search_filter:
-            search_filter = self.search_filter.format(
-                userattr=self.user_attribute, username=username
-            )
             conn.search(
                 search_base=self.user_search_base,
                 search_scope=ldap3.SUBTREE,
-                search_filter=search_filter,
+                search_filter=self.search_filter.format(
+                    # A search filter matching against string literals, should
+                    # have the string literals escaped with escape_filter_chars.
+                    # Escaped characters are `/()*` (and null).
+                    #
+                    # ref: https://datatracker.ietf.org/doc/html/rfc4515#section-3
+                    # ref: https://ldap3.readthedocs.io/en/latest/searches.html?highlight=escape_filter_chars
+                    #
+                    userattr=self.user_attribute,
+                    username=escape_filter_chars(resolved_username),
+                ),
                 attributes=self.attributes,
             )
-            n_users = len(conn.response)
-            if n_users == 0:
-                msg = "User with '{userattr}={username}' not found in directory"
+            n_entries = len(conn.entries)
+            if n_entries != 1:
                 self.log.warning(
-                    msg.format(userattr=self.user_attribute, username=username)
-                )
-                return None
-            if n_users > 1:
-                msg = (
-                    "Duplicate users found! "
-                    "{n_users} users found with '{userattr}={username}'"
-                )
-                self.log.warning(
-                    msg.format(
-                        userattr=self.user_attribute, username=username, n_users=n_users
-                    )
+                    f"Login of '{login_username}' denied. Configured search_filter "
+                    f"found {n_entries} users associated with "
+                    f"userattr='{self.user_attribute}' and username='{resolved_username}', "
+                    "and a unique match is required."
                 )
                 return None
 
+        ldap_groups = []
         if self.allowed_groups:
-            self.log.debug("username:%s Using dn %s", username, userdn)
-            found = False
+            self.log.debug("username:%s Using dn %s", resolved_username, userdn)
             for group in self.allowed_groups:
-                group_filter = (
-                    "(|"
-                    "(member={userdn})"
-                    "(uniqueMember={userdn})"
-                    "(memberUid={uid})"
-                    ")"
-                )
-                group_filter = group_filter.format(userdn=userdn, uid=username)
-                group_attributes = ["member", "uniqueMember", "memberUid"]
                 found = conn.search(
-                    group,
+                    search_base=group,
                     search_scope=ldap3.BASE,
-                    search_filter=group_filter,
-                    attributes=group_attributes,
+                    search_filter=self.group_search_filter.format(
+                        # A search filter matching against string literals, should
+                        # have the string literals escaped with escape_filter_chars.
+                        # Escaped characters are `/()*` (and null).
+                        #
+                        # ref: https://datatracker.ietf.org/doc/html/rfc4515#section-3
+                        # ref: https://ldap3.readthedocs.io/en/latest/searches.html?highlight=escape_filter_chars
+                        #
+                        userdn=escape_filter_chars(userdn),
+                        uid=escape_filter_chars(resolved_username),
+                    ),
+                    attributes=self.group_attributes,
                 )
                 if found:
-                    break
-            if not found:
-                # If we reach here, then none of the groups matched
-                msg = "username:{username} User not in any of the allowed groups"
-                self.log.warning(msg.format(username=username))
-                return None
+                    ldap_groups.append(group)
+                    # Returned in auth_state, so fetch the full list
 
-        if not self.use_lookup_dn_username:
-            username = data["username"]
+        user_attributes = self.get_user_attributes(conn, userdn)
+        self.log.debug("username:%s attributes:%s", login_username, user_attributes)
 
-        user_info = self.get_user_attributes(conn, userdn)
-        if user_info:
-            self.log.debug("username:%s attributes:%s", username, user_info)
-            return {"name": username, "auth_state": user_info}
-        return username
+        username = resolved_username if self.use_lookup_dn_username else login_username
+        auth_state = {
+            "ldap_groups": ldap_groups,
+            "user_attributes": user_attributes,
+        }
+        return {"name": username, "auth_state": auth_state}
 
-    @gen.coroutine
-    def pre_spawn_start(self, user, spawner):
+    async def check_allowed(self, username, auth_model):
+        if not hasattr(self, "allow_all"):
+            # super for JupyterHub < 5
+            # default behavior: no allow config => allow all
+            if not self.allowed_users and not self.allowed_groups:
+                return True
+            if self.allowed_users and username in self.allowed_users:
+                return True
+        else:
+            allowed = super().check_allowed(username, auth_model)
+            if isawaitable(allowed):
+                allowed = await allowed
+            if allowed is True:
+                return True
+        if self.allowed_groups:
+            # check allowed groups
+            in_groups = set((auth_model.get("auth_state") or {}).get("ldap_groups", []))
+            for group in self.allowed_groups:
+                if group in in_groups:
+                    self.log.debug("Allowing %s as member of group %s", username, group)
+                    return True
+        if self.search_filter:
+            self.log.info(
+                "User %s matches search_filter %s, but not allowed by allowed_users, allowed_groups, or allow_all.",
+                username,
+                self.search_filter,
+            )
+        return False
+
+    async def pre_spawn_start(self, user, spawner):
         auth_state = yield user.get_auth_state()
         # create uid and gid environment variables to be picked up by spawner
         self.log.debug('pre_spawn_start')
@@ -475,31 +746,11 @@ class LDAPAuthenticator(Authenticator):
         self.log.debug('auth_state: %s', str(auth_state))
         spawner.environment['NB_USER'] = user.name
         if auth_state['uidNumber'][0] > -1:
-            spawner.environment['NB_UID'] = str(auth_state['uidNumber'][0])
+            spawner.environment['NB_UID'] = str(auth_state['user_attributes']['uidNumber'][0])
         if auth_state['gidNumber'][0] > -1:
-            spawner.environment['NB_GID'] = str(auth_state['gidNumber'][0])
+            spawner.environment['NB_GID'] = str(auth_state['user_attributes']['gidNumber'][0])
         if auth_state['homeDirectory'][0]:
-            spawner.environment['NB_HOMEDIR'] = auth_state['homeDirectory'][0]
+            spawner.environment['NB_HOMEDIR'] = auth_state['user_attributes']['homeDirectory'][0]
         self.log.debug('final spawner environment:')
         self.log.debug(spawner.environment)
 
-if __name__ == "__main__":
-    import getpass
-
-    c = LDAPAuthenticator()
-    c.server_address = "ldap.organisation.org"
-    c.server_port = 636
-    c.bind_dn_template = "uid={username},ou=people,dc=organisation,dc=org"
-    c.user_attribute = "uid"
-    c.user_search_base = "ou=people,dc=organisation,dc=org"
-    c.attributes = ["uid", "cn", "mail", "ou", "o"]
-    # The following is an example of a search_filter which is build on LDAP AND and OR operations
-    # here in this example as a combination of the LDAP attributes 'ou', 'mail' and 'uid'
-    sf = "(&(o={o})(ou={ou}))".format(o="yourOrganisation", ou="yourOrganisationalUnit")
-    sf += "(&(o={o})(mail={mail}))".format(o="yourOrganisation", mail="yourMailAddress")
-    c.search_filter = "(&({{userattr}}={{username}})(|{}))".format(sf)
-    username = input("Username: ")
-    passwd = getpass.getpass()
-    data = dict(username=username, password=passwd)
-    rs = c.authenticate(None, data)
-    print(rs.result())

@@ -1,42 +1,29 @@
 # ldapauthenticator
 
-[![TravisCI (.com) build status](https://img.shields.io/travis/com/jupyterhub/ldapauthenticator/master?logo=travis)](https://travis-ci.com/jupyterhub/ldapauthenticator)
 [![Latest PyPI version](https://img.shields.io/pypi/v/jupyterhub-ldapauthenticator?logo=pypi)](https://pypi.python.org/pypi/jupyterhub-ldapauthenticator)
 [![Latest conda-forge version](https://img.shields.io/conda/vn/conda-forge/jupyterhub-ldapauthenticator?logo=conda-forge)](https://anaconda.org/conda-forge/jupyterhub-ldapauthenticator)
-[![GitHub](https://img.shields.io/badge/issue_tracking-github-blue?logo=github)](https://github.com/jupyterhub/ldapauthenticator/issues)
-[![Discourse](https://img.shields.io/badge/help_forum-discourse-blue?logo=discourse)](https://discourse.jupyter.org/c/jupyterhub)
-[![Gitter](https://img.shields.io/badge/social_chat-gitter-blue?logo=gitter)](https://gitter.im/jupyterhub/jupyterhub)
+[![GitHub Workflow Status - Test](https://img.shields.io/github/actions/workflow/status/jupyterhub/ldapauthenticator/test.yaml?logo=github&label=tests)](https://github.com/jupyterhub/ldapauthenticator/actions)
+[![Test coverage of code](https://codecov.io/gh/jupyterhub/ldapauthenticator/branch/main/graph/badge.svg)](https://codecov.io/gh/jupyterhub/ldapauthenticator)
+[![Issue tracking - GitHub](https://img.shields.io/badge/issue_tracking-github-blue?logo=github)](https://github.com/jupyterhub/ldapauthenticator/issues)
+[![Help forum - Discourse](https://img.shields.io/badge/help_forum-discourse-blue?logo=discourse)](https://discourse.jupyter.org/c/jupyterhub)
 
 Simple LDAP Authenticator Plugin for JupyterHub
 
----
-
-Please note that this repository is participating in a study into sustainability
-of open source projects. Data will be gathered about this repository for
-approximately the next 12 months, starting from 2021-06-11.
-
-Data collected will include number of contributors, number of PRs, time taken to
-close/merge these PRs, and issues closed.
-
-For more information, please visit
-[the informational page](https://sustainable-open-science-and-software.github.io/) or download the [participant information sheet](https://sustainable-open-science-and-software.github.io/assets/PIS_sustainable_software.pdf).
-
----
-
-## Installation ##
+## Installation
 
 You can install it from pip with:
 
 ```
 pip install jupyterhub-ldapauthenticator
 ```
+
 ...or using conda with:
+
 ```
 conda install -c conda-forge jupyterhub-ldapauthenticator
 ```
 
-
-## Logging people out ##
+## Logging people out
 
 If you make any changes to JupyterHub's authentication setup that changes
 which group of users is allowed to login (such as changing `allowed_groups`
@@ -45,41 +32,41 @@ jupyterhub cookie secret, or users who were previously logged in and did
 not log out would continue to be able to log in!
 
 You can do this by deleting the `jupyterhub_cookie_secret` file. Note
-that this will log out *all* users who are currently logged in.
+that this will log out _all_ users who are currently logged in.
 
+## Usage
 
-## Usage ##
+You can enable this authenticator by adding lines to your `jupyterhub_config.py`.
 
-You can enable this authenticator with the following lines in your
-`jupyter_config.py`:
+**Note: This file may not exist in your current installation! In TLJH, it
+is located in /opt/tljh/config/jupyterhub_config.d. Create it there if you
+don't already have one.**
 
 ```python
-c.JupyterHub.authenticator_class = 'ldapauthenticator.LDAPAuthenticator'
+c.JupyterHub.authenticator_class = 'ldap'
 ```
 
-### Required configuration ###
+### Required configuration
 
 At minimum, the following two configuration options must be set before
 the LDAP Authenticator can be used:
 
-
-#### `LDAPAuthenticator.server_address` ####
+#### `LDAPAuthenticator.server_address`
 
 Address of the LDAP Server to contact. Just use a bare hostname or IP,
 without a port name or protocol prefix.
 
-
-#### `LDAPAuthenticator.lookup_dn` or `LDAPAuthenticator.bind_dn_template` ####
+#### `LDAPAuthenticator.lookup_dn` or `LDAPAuthenticator.bind_dn_template`
 
 To authenticate a user we need the corresponding DN to bind against the LDAP server. The DN can be acquired by either:
 
 1. setting `bind_dn_template`, which is a list of string template used to
    generate the full DN for a user from the human readable username, or
 2. setting `lookup_dn` to `True`, which does a reverse lookup to obtain the
-   user's DN. This is because ome LDAP servers, such as Active Directory, don't
+   user's DN. This is because some LDAP servers, such as Active Directory, don't
    always bind with the true DN.
 
-##### `lookup_dn = False` #####
+##### `lookup_dn = False`
 
 If `lookup_dn = False`, then `bind_dn_template` is required to be a non-empty
 list of templates the users belong to. For example, if some of the users in your
@@ -101,7 +88,7 @@ uses [traitlets](https://traitlets.readthedocs.io) for configuration, and the
 
 The `{username}` is expanded into the username the user provides.
 
-##### `lookup_dn = True` #####
+##### `lookup_dn = True`
 
 ```python
 c.LDAPAuthenticator.lookup_dn = True
@@ -121,9 +108,9 @@ Also, when using `lookup_dn = True` the options `user_search_base`,
 `user_attribute`, `lookup_dn_user_dn_attribute` and `lookup_dn_search_filter`
 are required, although their defaults might be sufficient for your use case.
 
-### Optional configuration ###
+### Optional configuration
 
-#### `LDAPAuthenticator.allowed_groups` ####
+#### `LDAPAuthenticator.allowed_groups`
 
 LDAP groups whose members are allowed to log in. This must be
 set to either empty `[]` (the default, to disable) or to a list of
@@ -140,7 +127,36 @@ c.LDAPAuthenticator.allowed_groups = [
 ]
 ```
 
-#### `LDAPAuthenticator.valid_username_regex` ####
+#### `LDAPAuthenticator.group_search_filter`
+
+The LDAP group search filter.
+
+The default value is an LDAP OR search that looks like the following:
+
+```
+(|(member={userdn})(uniqueMember={userdn})(memberUid={uid}))
+```
+
+So it basically compares the `userdn` attribute against the `member` attribute,
+then against the `uniqueMember`, and finally checks the `memberUid` against
+the `uid`.
+
+If you modify this value, you probably want to change `group_attributes` too.
+Here is an example that should work with OpenLDAP servers.
+
+```
+(member={userdn})
+```
+
+#### `LDAPAuthenticator.group_attributes`
+
+A list of attributes used when searching for LDAP groups.
+
+By default, it uses `member`, `uniqueMember`, and `memberUid`. Certain
+servers may reject invalid values causing exceptions during
+authentication.
+
+#### `LDAPAuthenticator.valid_username_regex`
 
 All usernames will be checked against this before being sent
 to LDAP. This acts as both an easy way to filter out invalid
@@ -149,31 +165,91 @@ usernames as well as protection against LDAP injection attacks.
 By default it looks for the regex `^[a-z][.a-z0-9_-]*$` which
 is what most shell username validators do.
 
-#### `LDAPAuthenticator.use_ssl` ####
+#### `LDAPAuthenticator.use_ssl`
 
-Boolean to specify whether to use SSL encryption when contacting
-the LDAP server. If it is left to `False` (the default)
-`LDAPAuthenticator` will try to upgrade connection with StartTLS.
-Set this to be `True` to start SSL connection.
+`use_ssl` is deprecated since 2.0. `use_ssl=True` translates to configuring
+`tls_strategy="on_connect"`, but `use_ssl=False` (previous default) doesn't
+translate to anything.
 
-#### `LDAPAuthenticator.server_port` ####
+#### `LDAPAuthenticator.tls_strategy`
 
-Port to use to contact the LDAP server. Defaults to 389 if no SSL
-is being used, and 636 is SSL is being used.
+When LDAPAuthenticator connects to the LDAP server, it can establish a
+SSL/TLS connection directly, or do it before binding, which is LDAP
+terminology for authenticating and sending sensitive credentials.
 
-#### `LDAPAuthenticator.user_search_base` ####
+The LDAP v3 protocol deprecated establishing a SSL/TLS connection
+directly (`tls_strategy="on_connect"`) in favor of upgrading the
+connection to SSL/TLS before binding (`tls_strategy="before_bind"`).
 
-Only used with `lookup_dn=True`.  Defines the search base for looking up users
-in the directory.
+Supported `tls_strategy` values are:
+
+- "before_bind" (default)
+- "on_connect" (deprecated in LDAP v3, associated with use of port 636)
+- "insecure"
+
+When configuring `tls_strategy="on_connect"`, the default value of
+`server_port` becomes 636.
+
+#### `LDAPAuthenticator.tls_kwargs`
+
+A dictionary that will be used as keyword arguments for the constructor
+of the ldap3 package's Tls object, influencing encrypted connections to
+the LDAP server.
+
+For details on what can be configured and its effects, refer to the
+ldap3 package's documentation and code:
+
+- ldap3 documentation: https://ldap3.readthedocs.io/en/latest/ssltls.html#the-tls-object
+- ldap3 code: https://github.com/cannatag/ldap3/blob/v2.9.1/ldap3/core/tls.py#L59-L82
+
+You can for example configure this like:
+
+```python
+c.LDAPAuthenticator.tls_kwargs = {
+    "ca_certs_file": "file/path.here",
+}
+```
+
+#### `LDAPAuthenticator.server_port`
+
+Port on which to contact the LDAP server.
+
+Defaults to `636` if `tls_strategy="on_connect"` is set, `389`
+otherwise.
+
+#### `LDAPAuthenticator.user_search_base`
+
+Only used with `lookup_dn=True` or with a configured `search_filter`.
+
+Defines the search base for looking up users in the directory.
 
 ```python
 c.LDAPAuthenticator.user_search_base = 'ou=People,dc=example,dc=com'
 ```
 
-#### `LDAPAuthenticator.user_attribute` ####
+LDAPAuthenticator will search all objects matching under this base where
+the `user_attribute` is set to the current username to form the userdn.
 
-Only used with `lookup_dn=True`.  Defines the attribute that stores a user's
-username in your directory.
+For example, if all users objects existed under the base
+`ou=people,dc=wikimedia,dc=org`, and the username users use is set with
+the attribute `uid`, you can use the following config:
+
+```python
+c.LDAPAuthenticator.lookup_dn = True
+c.LDAPAuthenticator.lookup_dn_search_filter = '({login_attr}={login})'
+c.LDAPAuthenticator.lookup_dn_search_user = 'ldap_search_user_technical_account'
+c.LDAPAuthenticator.lookup_dn_search_password = 'secret'
+c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
+c.LDAPAuthenticator.user_attribute = 'uid'
+c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
+```
+
+#### `LDAPAuthenticator.user_attribute`
+
+Only used with `lookup_dn=True` or with a configured `search_filter`.
+
+Together with `user_search_base`, this attribute will be searched to
+contain the username provided by the user in JupyterHub's login form.
 
 ```python
 # Active Directory
@@ -183,54 +259,85 @@ c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
 c.LDAPAuthenticator.user_attribute = 'uid'
 ```
 
-#### `LDAPAuthenticator.lookup_dn_search_filter` ####
+#### `LDAPAuthenticator.lookup_dn_search_filter`
 
-How to query LDAP for user name lookup, if `lookup_dn` is set to True.
-Default value `'({login_attr}={login})'` should be good enough for most use cases.
+Only used with `lookup_dn=True`.
 
+How to query LDAP for user name lookup.
 
-#### `LDAPAuthenticator.lookup_dn_search_user`, `LDAPAuthenticator.lookup_dn_search_password` ####
+Default value `'({login_attr}={login})'` should be good enough for most
+use cases.
 
-Technical account for user lookup, if `lookup_dn` is set to True.
-If both lookup_dn_search_user and lookup_dn_search_password are None, then anonymous LDAP query will be done.
+#### `LDAPAuthenticator.lookup_dn_search_user`, `LDAPAuthenticator.lookup_dn_search_password`
 
+Only used with `lookup_dn=True`.
 
-#### `LDAPAuthenticator.lookup_dn_user_dn_attribute` ####
+Technical account for user lookup. If both `lookup_dn_search_user` and
+`lookup_dn_search_password` are None, then anonymous LDAP query will be
+done.
 
-Attribute containing user's name needed for  building DN string, if `lookup_dn` is set to True.
+#### `LDAPAuthenticator.lookup_dn_user_dn_attribute`
+
+Only used with `lookup_dn=True`.
+
+Attribute containing user's name needed for building DN string.
 See `user_search_base` for info on how this attribute is used.
-For most LDAP servers, this is username.  For Active Directory, it is cn.
+For most LDAP servers, this is username. For Active Directory, it is cn.
 
-#### `LDAPAuthenticator.escape_userdn` ####
-
-If set to True, escape special chars in userdn when authenticating in LDAP.
-On some LDAP servers, when userdn contains chars like '(', ')', '\' authentication may fail when those chars
-are not escaped.
-
-#### `LDAPAuthenticator.auth_state_attributes` ####
+#### `LDAPAuthenticator.auth_state_attributes`
 
 An optional list of attributes to be fetched for a user after login.
-If found these will be returned as `auth_state`.
+If found, these will be available as `auth_state["user_attributes"]`.
 
-#### `LDAPAuthenticator.use_lookup_dn_username` ####
+#### `LDAPAuthenticator.use_lookup_dn_username`
 
-If set to True (the default) the username used to build the DN string is returned as the username when `lookup_dn` is True.
+Only used with `lookup_dn=True`.
 
-When authenticating on a Linux machine against an AD server this might return something different from the supplied UNIX username. In this case setting this option to False might be a solution.
+If configured True, the `lookup_dn_user_dn_attribute` value used to
+build the LDAP user's DN string is also used as the authenticated user's
+JuptyerHub username.
 
-## Compatibility ##
+If this is configured True, its important to ensure that the values of
+`lookup_dn_user_dn_attribute` are unique even after the are normalized
+to be lowercase, otherwise two LDAP users could end up sharing the same
+JupyterHub username.
+
+With ldapauthenticator 2, the default value was changed to False.
+
+#### `LDAPAuthenticator.search_filter`
+
+LDAP3 Search Filter to limit allowed users.
+
+That a unique LDAP user is identified with the search_filter is
+necessary but not sufficient to grant access. Grant access by setting
+one or more of `allowed_users`, `allow_all`, `allowed_groups`, etc.
+
+Users who do not match this filter cannot be allowed
+by any other configuration.
+
+The search filter string will be expanded, so that:
+
+- `{userattr}` is replaced with the `user_attribute` config's value.
+- `{username}` is replaced with an escaped username, either provided
+  directly or previously looked up with `lookup_dn` configured.
+
+#### `LDAPAuthenticator.attributes`
+
+List of attributes to be passed in the LDAP search with `search_filter`.
+
+## Compatibility
 
 This has been tested against an OpenLDAP server, with the client
 running Python 3.4. Verifications of this code working well with
 other LDAP setups are welcome, as are bug reports and patches to make
 it work with other LDAP setups!
 
-
-## Active Directory integration ##
+## Active Directory integration
 
 Please use following options for AD integration. This is useful especially in two cases:
-* LDAP Search requires valid user account in order to query user database
-* DN does not contain login but some other field, like CN (actual login is present in sAMAccountName, and we need to lookup CN)
+
+- LDAP Search requires valid user account in order to query user database
+- DN does not contain login but some other field, like CN (actual login is present in sAMAccountName, and we need to lookup CN)
 
 ```python
 c.LDAPAuthenticator.lookup_dn = True
@@ -240,13 +347,10 @@ c.LDAPAuthenticator.lookup_dn_search_password = 'secret'
 c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
 c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
 c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
-c.LDAPAuthenticator.escape_userdn = False
-c.LDAPAuthenticator.bind_dn_template = '{username}'
 ```
 
 In setup above, first LDAP will be searched (with account ldap_search_user_technical_account) for users that have sAMAccountName=login
 Then DN will be constructed using found CN value.
-
 
 ## Configuration note on local user creation
 
@@ -265,3 +369,89 @@ JupyterHub create local accounts using the LDAPAuthenticator.
 
 Issue [#19](https://github.com/jupyterhub/ldapauthenticator/issues/19) provides
 additional discussion on local user creation.
+
+## Handling SSL/TLS handshake errors
+
+If you have received a SSL/TLS handshake error, it could be that no [cipher
+suite] accepted by LDAPAuthenticator is also accepted by the LDAP server. This
+is likely because LDAPAuthenticator is stricter than the LDAP server and only
+accepts modern cipher suites than the LDAP server doesn't accept. Due to this,
+you should from a security perspective ideally modernize the LDAP server's
+accepted cipher suites rather than expand the LDAPAuthenticator accepted cipher
+suites to include older cipher suites.
+
+The cipher suites that LDAPAuthenticator accepted by default come from
+[ssl.create_default_context().get_ciphers()], which in turn can change with
+Python version. Upgrading Python from 3.7 - 3.9 to 3.10 - 3.13 is known to
+strictly reduce the set of accepted cipher suites from 30 to 17 for example. Due
+to this, upgrading Python could lead to observing a handshake error previously
+not observed.
+
+If you want to configure LDAPAuthenticator to accept older cipher suites instead
+of updating the LDAP server to accept modern cipher suites, you can do it using
+`LDAPAuthenticator.tls_kwargs` as demonstrated below.
+
+```python
+# default cipher suites accepted by LDAPAuthenticator in Python 3.7 - 3.9
+# it includes 30 cipher suites, where 13 of them were considered less secure
+# and removed as default cipher suites in Python 3.10
+old_ciphers_list_considered_less_secure = "AES128-SHA:AES256-SHA:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES128-SHA256:AES256-GCM-SHA384:AES256-SHA256:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-SHA256:DHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-CHACHA20-POLY1305:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+
+# default cipher suites accepted by LDAPAuthenticator in Python 3.10 - 3.13
+# this list includes 17 cipher suites out of the 30 in the old list, with no
+# new additions
+new_ciphers_list = "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-CHACHA20-POLY1305:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+
+c.LDAPAuthenticator.tls_kwargs = {
+    "ciphers": old_ciphers_list_considered_less_secure,
+}
+```
+
+For reference, you can use a command like below to see what the default cipher
+suites LDAPAuthenticator will use in various Python versions.
+
+```shell
+docker run -it --rm python:3.13 python -c 'import ssl; c = ssl.create_default_context(); print(":".join(sorted([c["name"] for c in c.get_ciphers()])))'
+```
+
+[cipher suite]: https://en.wikipedia.org/wiki/Cipher_suite#Full_handshake:_coordinating_cipher_suites
+[ssl.create_default_context().get_ciphers()]: https://docs.python.org/3/library/ssl.html#ssl.create_default_context
+
+## Testing LDAPAuthenticator without JupyterHub
+
+This script can be written to a file such as `test_ldap_auth.py`, and run with
+`python test_ldap_auth.py`, to test use of LDAPAuthenticator with a given config
+without involving JupyterHub.
+
+If the authenticator works, this script should print either None or a username
+depending if the user was considered allowed access.
+
+```python
+import asyncio
+import getpass
+
+from traitlets.config import Config
+from ldapauthenticator import LDAPAuthenticator
+
+# Configure LDAPAuthenticator below to work against your ldap server
+c = Config()
+c.LDAPAuthenticator.server_address = "ldap.organisation.org"
+c.LDAPAuthenticator.server_port = 636
+c.LDAPAuthenticator.bind_dn_template = "uid={username},ou=people,dc=organisation,dc=org"
+c.LDAPAuthenticator.user_attribute = "uid"
+c.LDAPAuthenticator.user_search_base = "ou=people,dc=organisation,dc=org"
+c.LDAPAuthenticator.attributes = ["uid", "cn", "mail", "ou", "o"]
+# The following is an example of a search_filter which is build on LDAP AND and OR operations
+# here in this example as a combination of the LDAP attributes 'ou', 'mail' and 'uid'
+sf = "(&(o={o})(ou={ou}))".format(o="yourOrganisation", ou="yourOrganisationalUnit")
+sf += "(&(o={o})(mail={mail}))".format(o="yourOrganisation", mail="yourMailAddress")
+c.LDAPAuthenticator.search_filter = f"(&({{userattr}}={{username}})(|{sf}))"
+
+# Run test
+authenticator = LDAPAuthenticator(config=c)
+username = input("Username: ")
+password = getpass.getpass()
+data = dict(username=username, password=password)
+return_value = asyncio.run(authenticator.authenticate(None, data))
+print(return_value)
+```

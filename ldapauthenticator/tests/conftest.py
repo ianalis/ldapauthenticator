@@ -1,37 +1,28 @@
-import inspect
 import os
 
 import pytest
-
-from ..ldapauthenticator import LDAPAuthenticator
-
-
-def pytest_collection_modifyitems(items):
-    """add asyncio marker to all async tests"""
-    for item in items:
-        if inspect.iscoroutinefunction(item.obj):
-            item.add_marker("asyncio")
-        if hasattr(inspect, "isasyncgenfunction"):
-            # double-check that we aren't mixing yield and async def
-            assert not inspect.isasyncgenfunction(item.obj)
+from traitlets.config import Config
 
 
-@pytest.fixture(scope="session")
-def authenticator():
-    authenticator = LDAPAuthenticator()
-    authenticator.server_address = os.environ.get("LDAP_HOST", "localhost")
-    authenticator.lookup_dn = True
-    authenticator.bind_dn_template = "cn={username},ou=people,dc=planetexpress,dc=com"
-    authenticator.user_search_base = "ou=people,dc=planetexpress,dc=com"
-    authenticator.user_attribute = "uid"
-    authenticator.lookup_dn_user_dn_attribute = "cn"
-    authenticator.escape_userdn = True
-    authenticator.attributes = ["uid", "cn", "mail", "ou"]
-    authenticator.use_lookup_dn_username = False
+@pytest.fixture()
+def c():
+    """
+    A base configuration for LDAPAuthenticator that individual tests can adjust.
+    """
+    c = Config()
+    c.LDAPAuthenticator.server_address = os.environ.get("LDAP_HOST", "localhost")
+    c.LDAPAuthenticator.lookup_dn = True
+    c.LDAPAuthenticator.bind_dn_template = (
+        "cn={username},ou=people,dc=planetexpress,dc=com"
+    )
+    c.LDAPAuthenticator.user_search_base = "ou=people,dc=planetexpress,dc=com"
+    c.LDAPAuthenticator.user_attribute = "uid"
+    c.LDAPAuthenticator.lookup_dn_user_dn_attribute = "cn"
+    c.LDAPAuthenticator.attributes = ["uid", "cn", "mail", "ou"]
 
-    authenticator.allowed_groups = [
+    c.LDAPAuthenticator.allowed_groups = [
         "cn=admin_staff,ou=people,dc=planetexpress,dc=com",
         "cn=ship_crew,ou=people,dc=planetexpress,dc=com",
     ]
 
-    return authenticator
+    return c
