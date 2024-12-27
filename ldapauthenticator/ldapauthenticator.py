@@ -736,8 +736,8 @@ class LDAPAuthenticator(Authenticator):
             )
         return False
 
-    def pre_spawn_start(self, user, spawner):
-        auth_state = user.get_auth_state()
+    async def pre_spawn_start(self, user, spawner):
+        auth_state = await user.get_auth_state()
         # create uid and gid environment variables to be picked up by spawner
         self.log.debug('pre_spawn_start')
         self.log.debug('initial spawner environment:')
